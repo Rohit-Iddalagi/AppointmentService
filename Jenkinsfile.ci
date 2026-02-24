@@ -13,6 +13,7 @@ pipeline {
   parameters {
     string(name: 'SONAR_PROJECT_KEY', defaultValue: 'appointment-service', description: 'SonarQube project key')
     string(name: 'SONAR_PROJECT_NAME', defaultValue: 'appointment-service', description: 'SonarQube project name')
+    string(name: 'SONAR_TOKEN_CREDENTIAL_ID', defaultValue: 'sonar-token-appointment-service', description: 'Jenkins secret text credential ID for Sonar token')
     string(name: 'CD_JOB_NAME', defaultValue: 'appointment-service-cd', description: 'Jenkins CD job name')
   }
 
@@ -44,15 +45,18 @@ pipeline {
 
     stage('SonarQube Scan') {
       steps {
-        withSonarQubeEnv('sonarqube') {
-          sh '''
-            sonar-scanner \
-              -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
-              -Dsonar.projectName=${SONAR_PROJECT_NAME} \
-              -Dsonar.sources=src \
-              -Dsonar.tests=tests \
-              -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
-          '''
+        withCredentials([string(credentialsId: params.SONAR_TOKEN_CREDENTIAL_ID, variable: 'SONAR_TOKEN')]) {
+          withSonarQubeEnv('sonarqube') {
+            sh '''
+              sonar-scanner \
+                -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+                -Dsonar.projectName=${SONAR_PROJECT_NAME} \
+                -Dsonar.token=${SONAR_TOKEN} \
+                -Dsonar.sources=src \
+                -Dsonar.tests=tests \
+                -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
+            '''
+          }
         }
       }
     }
