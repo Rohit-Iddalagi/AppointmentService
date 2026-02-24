@@ -1,0 +1,110 @@
+pipeline {
+  agent any
+
+  options {
+    timestamps()
+    disableConcurrentBuilds()
+  }
+
+  triggers {
+    githubPush()
+  }
+
+  parameters {
+    string(name: 'SONAR_PROJECT_KEY', defaultValue: 'appointment-service', description: 'SonarQube project key')
+    string(name: 'SONAR_PROJECT_NAME', defaultValue: 'appointment-service', description: 'SonarQube project name')
+    string(name: 'CD_JOB_NAME', defaultValue: 'appointment-service-cd', description: 'Jenkins CD job name')
+  }
+
+  stages {
+    stage('Checkout') {
+      steps {
+        checkout scm
+        sh 'mkdir -p reports'
+      }
+    }
+
+    stage('Install') {
+      steps {
+        sh 'npm install'
+      }
+    }
+
+    stage('Lint') {
+      steps {
+        sh 'npm run lint'
+      }
+    }
+
+    stage('Test') {
+      steps {
+        sh 'npm test -- --ci'
+      }
+    }
+
+    stage('SonarQube Scan') {
+      steps {
+        withSonarQubeEnv('sonarqube') {
+          sh '''
+            sonar-scanner \
+              -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+              -Dsonar.projectName=${SONAR_PROJECT_NAME} \
+              -Dsonar.sources=src \
+              -Dsonar.tests=tests \
+              -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
+          '''
+        }
+      }
+    }
+
+    stage('Quality Gate') {
+      steps {
+        timeout(time: 2, unit: 'MINUTES') {
+          waitForQualityGate abortPipeline: true
+        }
+      }
+    }
+
+    stage('Checkov') {
+      steps {
+        sh '''
+          checkov -d . --framework dockerfile,secrets --quiet \
+            | tee reports/checkov.txt
+        '''
+      }
+    }
+
+    stage('Trivy Filesystem Scan') {
+      steps {
+        sh '''
+          trivy --config /dev/null fs . \
+            --severity HIGH,CRITICAL \
+            --exit-code 1 \
+            --format table \
+            --output reports/trivy-fs.txt
+        '''
+      }
+    }
+
+    stage('Trigger CD') {
+      when {
+        branch 'main'
+      }
+      steps {
+        build job: params.CD_JOB_NAME,
+          wait: false,
+          parameters: [
+            string(name: 'UPSTREAM_GIT_COMMIT', value: env.GIT_COMMIT),
+            string(name: 'UPSTREAM_GIT_BRANCH', value: env.BRANCH_NAME)
+          ]
+      }
+    }
+  }
+
+  post {
+    always {
+      archiveArtifacts allowEmptyArchive: true, artifacts: 'reports/*,coverage/**'
+      cleanWs()
+    }
+  }
+}

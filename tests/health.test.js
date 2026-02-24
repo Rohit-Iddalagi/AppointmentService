@@ -12,7 +12,8 @@ describe('Health Endpoint', () => {
   it('should return 404 for unknown route', async () => {
     const res = await request(app).get('/api/v1/unknown');
     expect(res.statusCode).toBe(404);
-    expect(res.body.message).toBe('Not Found');
+    expect(res.body.success).toBe(false);
+    expect(res.body.message).toContain('not found');
   });
 });
 

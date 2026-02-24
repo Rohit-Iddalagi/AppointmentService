@@ -35,6 +35,11 @@ const config = {
   cors: {
     origin: process.env.CORS_ORIGIN || '*',
     credentials: process.env.CORS_CREDENTIALS === 'true'
+  },
+
+  server: {
+    requestTimeout: parseInt(process.env.REQUEST_TIMEOUT, 10) || 30000,
+    bodyLimit: process.env.BODY_LIMIT || '10mb'
   }
 };
 
