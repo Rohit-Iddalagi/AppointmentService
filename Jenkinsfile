@@ -1,78 +1,191 @@
 pipeline {
-
   agent any
-  environment {
-    AWS_REGION = 'us-east-1'
-    ECR_SNAPSHOT = '147997138755.dkr.ecr.us-east-1.amazonaws.com/snapshot/appointmentservice'
-    ECR_RELEASE = '147997138755.dkr.ecr.us-east-1.amazonaws.com/appointmentservice'
-    IMAGE_NAME = 'appointmentservice'
+
+  options {
+    timestamps()
+    disableConcurrentBuilds()
   }
+
+  triggers {
+    githubPush()
+  }
+
+  parameters {
+    string(name: 'AWS_REGION', defaultValue: 'us-east-1', description: 'AWS region')
+    string(name: 'ECR_REPOSITORY', defaultValue: 'appointmentservice', description: 'ECR repository name')
+    string(name: 'ECS_CLUSTER', defaultValue: 'hospital-management-prod-cluster', description: 'ECS cluster name')
+    string(name: 'ECS_SERVICE', defaultValue: 'appointment-service', description: 'ECS service name')
+    string(name: 'SONAR_PROJECT_KEY', defaultValue: 'appointment-service', description: 'SonarQube project key')
+    string(name: 'SONAR_PROJECT_NAME', defaultValue: 'appointment-service', description: 'SonarQube project name')
+  }
+
+  environment {
+    IMAGE_TAG = "${BUILD_NUMBER}-${GIT_COMMIT}"
+  }
+
   stages {
-    stage('Checkout & Install') {
+    stage('Checkout') {
       steps {
         checkout scm
-        sh 'rm -rf node_modules'
-        sh 'export NODE_ENV=development && npm install'
+        sh 'mkdir -p reports'
       }
     }
-    stage('Quality Checks') {
-      parallel {
-        stage('Lint') {
-          steps {
-            sh 'npm run lint'
-          }
-        }
-        stage('UnitTest') {
-          steps {
-            sh 'npm test -- --coverage'
-          }
-        }
-      }
-    }
-    stage('SonarQube') {
+
+    stage('Install') {
       steps {
-        withCredentials([string(credentialsId: 'SONAR_TOKEN_APPOINTMENT', variable: 'SONAR_TOKEN')]) {
+        sh 'npm install'
+      }
+    }
+
+    stage('Lint') {
+      steps {
+        sh 'npm run lint'
+      }
+    }
+
+    stage('Test') {
+      steps {
+        sh 'npm test -- --ci'
+      }
+      post {
+        always {
+          junit allowEmptyResults: true, testResults: 'reports/junit.xml'
+        }
+      }
+    }
+
+    stage('SonarQube Scan') {
+      steps {
+        withSonarQubeEnv('sonarqube') {
           sh '''
-            export PATH=$PATH:/opt/sonar-scanner/bin
             sonar-scanner \
-              -Dsonar.host.url=http://100.50.131.6:9000 \
-              -Dsonar.login=$SONAR_TOKEN
+              -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+              -Dsonar.projectName=${SONAR_PROJECT_NAME} \
+              -Dsonar.sources=src \
+              -Dsonar.tests=tests \
+              -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
           '''
         }
       }
     }
-    stage('Docker Build & Trivy Scan') {
+
+    stage('Quality Gate') {
       steps {
-        script {
-          dockerImage = docker.build("${ECR_SNAPSHOT}:${env.BUILD_NUMBER}")
-        }
-        sh "trivy image --exit-code 1 --severity HIGH,CRITICAL ${ECR_SNAPSHOT}:${env.BUILD_NUMBER} || true"
-      }
-    }
-    stage('Push to ECR Snapshot') {
-      steps {
-        script {
-          withCredentials([aws(credentialsId: 'AWS Credentials')]) {
-            sh "aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin 147997138755.dkr.ecr.us-east-1.amazonaws.com"
-            sh "docker push ${ECR_SNAPSHOT}:${env.BUILD_NUMBER}"
-          }
+        timeout(time: 10, unit: 'MINUTES') {
+          waitForQualityGate abortPipeline: true
         }
       }
     }
-    stage('Push to Release') {
+
+    stage('Checkov') {
       steps {
-        script {
-          withCredentials([aws(credentialsId: 'AWS Credentials')]) {
-            sh "docker tag ${ECR_SNAPSHOT}:${env.BUILD_NUMBER} ${ECR_RELEASE}:release-${env.BUILD_NUMBER}"
-            sh "docker push ${ECR_RELEASE}:release-${env.BUILD_NUMBER}"
-            sh "docker tag ${ECR_SNAPSHOT}:${env.BUILD_NUMBER} ${ECR_RELEASE}:latest"
-            sh "docker push ${ECR_RELEASE}:latest"
-          }
+        sh '''
+          checkov -d . --framework dockerfile,secrets --quiet \
+            | tee reports/checkov.txt
+        '''
+      }
+    }
+
+    stage('Trivy Filesystem Scan') {
+      steps {
+        sh '''
+          trivy fs . \
+            --severity HIGH,CRITICAL \
+            --exit-code 1 \
+            --format table \
+            --output reports/trivy-fs.txt
+        '''
+      }
+    }
+
+    stage('Docker Build') {
+      when {
+        branch 'main'
+      }
+      steps {
+        sh '''
+          SHORT_SHA=$(echo "${GIT_COMMIT}" | cut -c1-7)
+          IMAGE_TAG="${BUILD_NUMBER}-${SHORT_SHA}"
+          echo "${IMAGE_TAG}" > reports/image_tag.txt
+          docker build -t ${ECR_REPOSITORY}:${IMAGE_TAG} -t ${ECR_REPOSITORY}:latest .
+        '''
+      }
+    }
+
+    stage('Trivy Image Scan') {
+      when {
+        branch 'main'
+      }
+      steps {
+        sh '''
+          SHORT_SHA=$(echo "${GIT_COMMIT}" | cut -c1-7)
+          IMAGE_TAG="${BUILD_NUMBER}-${SHORT_SHA}"
+          trivy image ${ECR_REPOSITORY}:${IMAGE_TAG} \
+            --severity HIGH,CRITICAL \
+            --exit-code 1 \
+            --format table \
+            --output reports/trivy-image.txt
+        '''
+      }
+    }
+
+    stage('Push To ECR') {
+      when {
+        branch 'main'
+      }
+      steps {
+        withCredentials([[
+          $class: 'AmazonWebServicesCredentialsBinding',
+          credentialsId: 'aws-jenkins'
+        ]]) {
+          sh '''
+            AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+            SHORT_SHA=$(echo "${GIT_COMMIT}" | cut -c1-7)
+            IMAGE_TAG="${BUILD_NUMBER}-${SHORT_SHA}"
+            ECR_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}"
+
+            aws ecr get-login-password --region ${AWS_REGION} | \
+              docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+
+            docker tag ${ECR_REPOSITORY}:${IMAGE_TAG} ${ECR_URI}:${IMAGE_TAG}
+            docker tag ${ECR_REPOSITORY}:latest ${ECR_URI}:latest
+            docker push ${ECR_URI}:${IMAGE_TAG}
+            docker push ${ECR_URI}:latest
+          '''
+        }
+      }
+    }
+
+    stage('Deploy To ECS Fargate') {
+      when {
+        branch 'main'
+      }
+      steps {
+        withCredentials([[
+          $class: 'AmazonWebServicesCredentialsBinding',
+          credentialsId: 'aws-jenkins'
+        ]]) {
+          sh '''
+            aws ecs update-service \
+              --cluster ${ECS_CLUSTER} \
+              --service ${ECS_SERVICE} \
+              --force-new-deployment \
+              --region ${AWS_REGION}
+
+            aws ecs wait services-stable \
+              --cluster ${ECS_CLUSTER} \
+              --services ${ECS_SERVICE} \
+              --region ${AWS_REGION}
+          '''
         }
       }
     }
   }
+
   post {
-    always { cleanWs() }
+    always {
+      archiveArtifacts allowEmptyArchive: true, artifacts: 'reports/*,coverage/**'
+      cleanWs()
+    }
   }
 }
