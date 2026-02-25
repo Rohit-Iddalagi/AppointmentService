@@ -31,10 +31,11 @@ pipeline {
     stage('Docker Build') {
       steps {
         sh '''
+          REPO="${ECR_REPOSITORY:-appointmentservice}"
           SHORT_SHA=$(echo "${GIT_COMMIT}" | cut -c1-7)
           IMAGE_TAG="${BUILD_NUMBER}-${SHORT_SHA}"
           echo "${IMAGE_TAG}" > reports/image_tag.txt
-          docker build -t ${ECR_REPOSITORY}:${IMAGE_TAG} -t ${ECR_REPOSITORY}:latest .
+          docker build -t ${REPO}:${IMAGE_TAG} -t ${REPO}:latest .
         '''
       }
     }
@@ -42,9 +43,10 @@ pipeline {
     stage('Trivy Image Scan') {
       steps {
         sh '''
+          REPO="${ECR_REPOSITORY:-appointmentservice}"
           SHORT_SHA=$(echo "${GIT_COMMIT}" | cut -c1-7)
           IMAGE_TAG="${BUILD_NUMBER}-${SHORT_SHA}"
-          trivy --config /dev/null image ${ECR_REPOSITORY}:${IMAGE_TAG} \
+          trivy --config /dev/null image ${REPO}:${IMAGE_TAG} \
             --severity HIGH,CRITICAL \
             --exit-code 1 \
             --format table \
@@ -60,16 +62,18 @@ pipeline {
           credentialsId: 'aws-jenkins'
         ]]) {
           sh '''
+            REPO="${ECR_REPOSITORY:-appointmentservice}"
+            REGION="${AWS_REGION:-us-east-1}"
             AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
             SHORT_SHA=$(echo "${GIT_COMMIT}" | cut -c1-7)
             IMAGE_TAG="${BUILD_NUMBER}-${SHORT_SHA}"
-            ECR_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}"
+            ECR_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${REPO}"
 
-            aws ecr get-login-password --region ${AWS_REGION} | \
-              docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+            aws ecr get-login-password --region ${REGION} | \
+              docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com
 
-            docker tag ${ECR_REPOSITORY}:${IMAGE_TAG} ${ECR_URI}:${IMAGE_TAG}
-            docker tag ${ECR_REPOSITORY}:latest ${ECR_URI}:latest
+            docker tag ${REPO}:${IMAGE_TAG} ${ECR_URI}:${IMAGE_TAG}
+            docker tag ${REPO}:latest ${ECR_URI}:latest
             docker push ${ECR_URI}:${IMAGE_TAG}
             docker push ${ECR_URI}:latest
           '''
@@ -84,16 +88,19 @@ pipeline {
           credentialsId: 'aws-jenkins'
         ]]) {
           sh '''
+            REGION="${AWS_REGION:-us-east-1}"
+            CLUSTER="${ECS_CLUSTER:-hospital-management-prod-cluster}"
+            SERVICE="${ECS_SERVICE:-appointment-service}"
             aws ecs update-service \
-              --cluster ${ECS_CLUSTER} \
-              --service ${ECS_SERVICE} \
+              --cluster ${CLUSTER} \
+              --service ${SERVICE} \
               --force-new-deployment \
-              --region ${AWS_REGION}
+              --region ${REGION}
 
             aws ecs wait services-stable \
-              --cluster ${ECS_CLUSTER} \
-              --services ${ECS_SERVICE} \
-              --region ${AWS_REGION}
+              --cluster ${CLUSTER} \
+              --services ${SERVICE} \
+              --region ${REGION}
           '''
         }
       }
