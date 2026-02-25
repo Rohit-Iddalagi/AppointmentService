@@ -26,18 +26,33 @@ pipeline {
     }
 
     stage('Install') {
+      options {
+        timeout(time: 20, unit: 'MINUTES')
+      }
       steps {
-        sh 'npm install'
+        retry(2) {
+          sh '''
+            npm config set fund false
+            npm config set audit false
+            npm ci --no-audit --no-fund --prefer-offline || npm install --no-audit --no-fund
+          '''
+        }
       }
     }
 
     stage('Lint') {
+      options {
+        timeout(time: 10, unit: 'MINUTES')
+      }
       steps {
         sh 'npm run lint'
       }
     }
 
     stage('Test') {
+      options {
+        timeout(time: 15, unit: 'MINUTES')
+      }
       steps {
         sh 'npm test -- --ci'
       }
