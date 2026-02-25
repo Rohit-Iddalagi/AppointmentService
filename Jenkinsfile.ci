@@ -48,9 +48,11 @@ pipeline {
         withCredentials([string(credentialsId: params.SONAR_TOKEN_CREDENTIAL_ID, variable: 'SONAR_TOKEN')]) {
           withSonarQubeEnv('sonarqube') {
             sh '''
+              PROJECT_KEY="${SONAR_PROJECT_KEY:-appointment-service}"
+              PROJECT_NAME="${SONAR_PROJECT_NAME:-appointment-service}"
               sonar-scanner \
-                -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
-                -Dsonar.projectName=${SONAR_PROJECT_NAME} \
+                -Dsonar.projectKey=${PROJECT_KEY} \
+                -Dsonar.projectName=${PROJECT_NAME} \
                 -Dsonar.token=${SONAR_TOKEN} \
                 -Dsonar.sources=src \
                 -Dsonar.tests=tests \
