@@ -43,6 +43,14 @@ pipeline {
       }
     }
 
+    stage('NPM Audit') {
+      steps {
+        sh '''
+          npm audit --audit-level=high --json > reports/npm-audit.json || true
+        '''
+      }
+    }
+
     stage('SonarQube Scan') {
       steps {
         withCredentials([string(credentialsId: params.SONAR_TOKEN_CREDENTIAL_ID, variable: 'SONAR_TOKEN')]) {

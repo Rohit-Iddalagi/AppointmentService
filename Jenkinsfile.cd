@@ -11,6 +11,7 @@ pipeline {
     string(name: 'ECR_REPOSITORY', defaultValue: 'appointmentservice', description: 'ECR repository name')
     string(name: 'ECS_CLUSTER', defaultValue: 'hospital-management-prod-cluster', description: 'ECS cluster name')
     string(name: 'ECS_SERVICE', defaultValue: 'appointment-service', description: 'ECS service name')
+    string(name: 'HEALTHCHECK_PATH', defaultValue: '/api/v1/health', description: 'HTTP path for post-deploy smoke test')
     string(name: 'UPSTREAM_GIT_COMMIT', defaultValue: '', description: 'Commit SHA from CI trigger')
     string(name: 'UPSTREAM_GIT_BRANCH', defaultValue: 'main', description: 'Branch from CI trigger')
   }
@@ -102,6 +103,40 @@ pipeline {
               --cluster ${CLUSTER} \
               --services ${SERVICE} \
               --region ${REGION}
+          '''
+        }
+      }
+    }
+
+    stage('Smoke Test') {
+      steps {
+        withCredentials([[
+          $class: 'AmazonWebServicesCredentialsBinding',
+          credentialsId: 'aws-jenkins'
+        ]]) {
+          sh '''
+            REGION="${AWS_REGION:-us-east-1}"
+            CLUSTER="${ECS_CLUSTER:-hospital-management-prod-cluster}"
+            SERVICE="${ECS_SERVICE:-appointment-service}"
+            HEALTH_PATH="${HEALTHCHECK_PATH:-/api/v1/health}"
+
+            TG_ARN=$(aws ecs describe-services --cluster "${CLUSTER}" --services "${SERVICE}" --region "${REGION}" --query 'services[0].loadBalancers[0].targetGroupArn' --output text)
+            LB_ARN=$(aws elbv2 describe-target-groups --target-group-arns "${TG_ARN}" --region "${REGION}" --query 'TargetGroups[0].LoadBalancerArns[0]' --output text)
+            ALB_DNS=$(aws elbv2 describe-load-balancers --load-balancer-arns "${LB_ARN}" --region "${REGION}" --query 'LoadBalancers[0].DNSName' --output text)
+            URL="http://${ALB_DNS}${HEALTH_PATH}"
+            echo "${URL}" > reports/smoke-url.txt
+
+            for i in $(seq 1 18); do
+              code=$(curl -s -o /dev/null -w "%{http_code}" "${URL}" || true)
+              if [ "${code}" -ge 200 ] && [ "${code}" -lt 400 ]; then
+                echo "Smoke test passed with HTTP ${code}"
+                exit 0
+              fi
+              sleep 10
+            done
+
+            echo "Smoke test failed for ${URL}"
+            exit 1
           '''
         }
       }
