@@ -74,16 +74,23 @@ pipeline {
     }
 
     stage('SonarQube Scan') {
+      options {
+        timeout(time: 20, unit: 'MINUTES')
+      }
       steps {
         withCredentials([string(credentialsId: params.SONAR_TOKEN_CREDENTIAL_ID, variable: 'SONAR_TOKEN')]) {
           withSonarQubeEnv('sonarqube') {
             sh '''
               PROJECT_KEY="${SONAR_PROJECT_KEY:-appointment-service}"
               PROJECT_NAME="${SONAR_PROJECT_NAME:-appointment-service}"
+              ( while true; do echo "[keepalive] $(date -u +%FT%TZ) appointment-service sonar scan running..."; sleep 30; done ) &
+              KEEPALIVE_PID=$!
+              trap 'kill ${KEEPALIVE_PID} >/dev/null 2>&1 || true' EXIT
               sonar-scanner \
                 -Dsonar.projectKey=${PROJECT_KEY} \
                 -Dsonar.projectName=${PROJECT_NAME} \
                 -Dsonar.token=${SONAR_TOKEN} \
+                -Dsonar.ws.timeout=300 \
                 -Dsonar.sources=src \
                 -Dsonar.tests=tests \
                 -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
