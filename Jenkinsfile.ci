@@ -34,7 +34,14 @@ pipeline {
           sh '''
             npm config set fund false
             npm config set audit false
-            npm ci --no-audit --no-fund --prefer-offline || npm install --no-audit --no-fund
+            if [ -f package-lock.json ]; then
+              npm ci --no-audit --no-fund --prefer-offline
+            else
+              npm install --no-audit --no-fund --prefer-offline \
+                --fetch-retries=5 \
+                --fetch-retry-mintimeout=20000 \
+                --fetch-retry-maxtimeout=120000
+            fi
           '''
         }
       }
